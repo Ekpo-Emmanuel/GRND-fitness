@@ -52,6 +52,13 @@ interface WorkoutSetup {
   templateId?: Id<'workoutTemplates'>;
 }
 
+// Add interface for saved workout progress
+interface SavedWorkoutProgress {
+  muscleGroups: MuscleGroup[];
+  elapsedTime: number;
+  lastSaved: number;
+}
+
 export default function NewWorkoutPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
@@ -67,6 +74,7 @@ export default function NewWorkoutPage() {
   const [activeInputId, setActiveInputId] = useState<string | null>(null); // Track which input is currently active
   const [invalidSetInputs, setInvalidSetInputs] = useState<Record<string, boolean>>({});
   const [isInitialized, setIsInitialized] = useState(false);
+  const [lastSaved, setLastSaved] = useState<number | null>(null);
 
   // Get user profile from Convex
   const userProfile = useQuery(api.users.getProfile,
@@ -78,6 +86,70 @@ export default function NewWorkoutPage() {
   const completeWorkout = useMutation(api.workouts.completeWorkout);
   const saveWorkoutAsTemplate = useMutation(api.workouts.saveWorkoutAsTemplate);
   const createWorkoutFromTemplate = useMutation(api.workouts.createWorkoutFromTemplate); // Added for template workouts
+
+  // Auto-save workout progress to localStorage
+  const saveWorkoutProgress = (muscleGroups: MuscleGroup[], elapsedTime: number) => {
+    if (typeof window !== 'undefined') {
+      const progress: SavedWorkoutProgress = {
+        muscleGroups,
+        elapsedTime,
+        lastSaved: Date.now()
+      };
+      localStorage.setItem('workoutProgress', JSON.stringify(progress));
+      setLastSaved(Date.now());
+    }
+  };
+
+  // Load saved workout progress from localStorage
+  const loadWorkoutProgress = (): SavedWorkoutProgress | null => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('workoutProgress');
+      if (saved) {
+        try {
+          return JSON.parse(saved) as SavedWorkoutProgress;
+        } catch (error) {
+          console.error('Error parsing saved workout progress:', error);
+          localStorage.removeItem('workoutProgress');
+        }
+      }
+    }
+    return null;
+  };
+
+  // Clear saved workout progress
+  const clearWorkoutProgress = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('workoutProgress');
+    }
+  };
+
+  // Auto-save effect - save progress whenever muscleGroups or elapsedTime changes
+  useEffect(() => {
+    if (muscleGroups.length > 0 && workoutSetup) {
+      saveWorkoutProgress(muscleGroups, elapsedTime);
+    }
+  }, [muscleGroups, elapsedTime, workoutSetup]);
+
+  // Warn user before leaving page with unsaved progress
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Check if there's any progress to save
+      const hasProgress = muscleGroups.some(group => 
+        group.exercises.some(exercise => 
+          exercise.sets.some(set => set.completed || set.weight || set.reps)
+        )
+      );
+      
+      if (hasProgress) {
+        e.preventDefault();
+        e.returnValue = 'You have unsaved workout progress. Are you sure you want to leave?';
+        return e.returnValue;
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [muscleGroups]);
 
   // Timer effect to track workout duration
   useEffect(() => {
@@ -149,34 +221,51 @@ export default function NewWorkoutPage() {
 
         setWorkoutSetup(parsedSetup);
 
-        // Initialize muscle groups based on setup data
-        const muscleGroupLabels: Record<string, string> = {
-          chest: 'Chest',
-          back: 'Back',
-          arms: 'Arms',
-          legs: 'Legs',
-          core: 'Core',
-          shoulders: 'Shoulders',
-          fullBody: 'Full Body',
-        };
-
-        // Create initial muscle groups with selected exercises
-        const initialMuscleGroups = parsedSetup.muscleGroups.map(groupId => {
-          const exercises = selectedExercises[groupId] || [];
-
-          return {
-            id: groupId,
-            name: muscleGroupLabels[groupId] || groupId,
-            exercises: exercises.length > 0
-              ? exercises.map(exerciseName => ({
-                id: generateId(),
-                name: exerciseName,
-                sets: [createEmptySet()],
-                notes: '',
-              }))
-              : [createEmptyExercise(groupId)]
+        // Check for saved progress first
+        const savedProgress = loadWorkoutProgress();
+        
+        if (savedProgress && savedProgress.muscleGroups.length > 0) {
+          // Restore saved progress
+          setMuscleGroups(savedProgress.muscleGroups);
+          setElapsedTime(savedProgress.elapsedTime);
+          setLastSaved(savedProgress.lastSaved);
+          
+          // Show recovery message
+          toast.success('Workout progress restored!', {
+            description: 'Your previous workout session has been recovered.'
+          });
+        } else {
+          // Initialize muscle groups based on setup data
+          const muscleGroupLabels: Record<string, string> = {
+            chest: 'Chest',
+            back: 'Back',
+            arms: 'Arms',
+            legs: 'Legs',
+            core: 'Core',
+            shoulders: 'Shoulders',
+            fullBody: 'Full Body',
           };
-        });
+
+          // Create initial muscle groups with selected exercises
+          const initialMuscleGroups = parsedSetup.muscleGroups.map(groupId => {
+            const exercises = selectedExercises[groupId] || [];
+
+            return {
+              id: groupId,
+              name: muscleGroupLabels[groupId] || groupId,
+              exercises: exercises.length > 0
+                ? exercises.map(exerciseName => ({
+                  id: generateId(),
+                  name: exerciseName,
+                  sets: [createEmptySet()],
+                  notes: '',
+                }))
+                : [createEmptyExercise(groupId)]
+            };
+          });
+
+          setMuscleGroups(initialMuscleGroups);
+        }
 
         // Initialize all groups as expanded
         const initialExpandedState: Record<string, boolean> = {};
@@ -185,7 +274,6 @@ export default function NewWorkoutPage() {
         });
         setExpandedGroups(initialExpandedState);
 
-        setMuscleGroups(initialMuscleGroups);
         setIsLoading(false);
         setIsInitialized(true);
       } catch (error) {
@@ -452,6 +540,7 @@ export default function NewWorkoutPage() {
       // Clear the session storage
       localStorage.removeItem('workoutSetup');
       localStorage.removeItem('selectedExercises');
+      clearWorkoutProgress(); // Clear saved progress on completion
 
       // Show success toast
       toast.success('Workout completed successfully!', {
@@ -606,7 +695,14 @@ export default function NewWorkoutPage() {
               <span>{workoutSetup.name || "Workout"}</span>
               <span className="bg-blue-50 px-3 py-1 rounded-full text-blue-600 font-bold text-base tracking-wider">{formatTime(elapsedTime)}</span>
             </CardTitle>
-            <div className="text-gray-500 text-sm">{workoutSetup.day} - {new Date(workoutSetup.timestamp).toLocaleDateString()}</div>
+            <div className="text-gray-500 text-sm flex justify-between items-center">
+              <span>{workoutSetup.day} - {new Date(workoutSetup.timestamp).toLocaleDateString()}</span>
+              {lastSaved && (
+                <span className="text-xs text-green-600">
+                  Saved {Math.floor((Date.now() - lastSaved) / 1000)}s ago
+                </span>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-4">
@@ -871,6 +967,7 @@ export default function NewWorkoutPage() {
               if (confirm('Are you sure you want to cancel this workout? All progress will be lost.')) {
                 localStorage.removeItem('workoutSetup');
                 localStorage.removeItem('selectedExercises');
+                clearWorkoutProgress(); // Clear saved progress on cancellation
                 router.push('/dashboard');
               }
             }}
