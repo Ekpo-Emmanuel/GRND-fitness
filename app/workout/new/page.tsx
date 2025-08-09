@@ -86,6 +86,7 @@ export default function NewWorkoutPage() {
   const completeWorkout = useMutation(api.workouts.completeWorkout);
   const saveWorkoutAsTemplate = useMutation(api.workouts.saveWorkoutAsTemplate);
   const createWorkoutFromTemplate = useMutation(api.workouts.createWorkoutFromTemplate); // Added for template workouts
+  const updateWorkout = useMutation(api.workouts.updateWorkout);
 
   // Auto-save workout progress to localStorage
   const saveWorkoutProgress = (muscleGroups: MuscleGroup[], elapsedTime: number) => {
@@ -515,14 +516,19 @@ export default function NewWorkoutPage() {
 
       let workoutId;
 
-      // If this workout was started from a template, use createWorkoutFromTemplate
+      // If this workout was started from a template, create from template then patch with performed sets/reps
       if (workoutSetup.fromTemplate && workoutSetup.templateId) {
         workoutId = await createWorkoutFromTemplate({
           userId: user.id,
           templateId: workoutSetup.templateId
         });
+        // Patch the workout with the actual performed content
+        await updateWorkout({
+          workoutId,
+          muscleGroups: filteredMuscleGroups,
+        });
       } else {
-        // Otherwise create a new workout from scratch
+        // Otherwise create a new workout from scratch with actual content
         workoutId = await createWorkout({
           userId: user.id,
           muscleGroups: filteredMuscleGroups,
